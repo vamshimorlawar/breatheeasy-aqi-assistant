@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# Tried in order; the next one is used if a model is retired, rate-limited or overloaded.
+# "Lite" models come first: rewriting pre-computed, grounded data needs speed, not deep reasoning.
+DEFAULT_MODELS = "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.8-flash"
 
 
 def load_dotenv(path: Path = PROJECT_ROOT / ".env") -> None:
@@ -41,7 +44,7 @@ def _int_env(name: str, default: int, minimum: int = 1) -> int:
 @dataclass(frozen=True)
 class Settings:
     gemini_api_key: str | None
-    gemini_model: str
+    gemini_models: tuple[str, ...]
     ai_timeout_seconds: float
     cache_ttl_seconds: int
     rate_limit_per_minute: int
@@ -56,8 +59,8 @@ def get_settings() -> Settings:
     load_dotenv()
     return Settings(
         gemini_api_key=os.environ.get("GEMINI_API_KEY") or None,
-        gemini_model=os.environ.get("GEMINI_MODEL", "gemini-2.5-flash"),
-        ai_timeout_seconds=float(_int_env("AI_TIMEOUT_SECONDS", 20)),
+        gemini_models=tuple(m.strip() for m in os.environ.get("GEMINI_MODELS", DEFAULT_MODELS).split(",") if m.strip()),
+        ai_timeout_seconds=float(_int_env("AI_TIMEOUT_SECONDS", 30)),
         cache_ttl_seconds=_int_env("CACHE_TTL_SECONDS", 900),
         rate_limit_per_minute=_int_env("RATE_LIMIT_PER_MINUTE", 30),
         http_timeout_seconds=float(_int_env("HTTP_TIMEOUT_SECONDS", 10)),

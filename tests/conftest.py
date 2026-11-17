@@ -81,7 +81,7 @@ class FakeAdvisor:
 def make_settings(**overrides) -> Settings:
     values = dict(
         gemini_api_key=None,
-        gemini_model="gemini-2.5-flash",
+        gemini_models=("gemini-test",),
         ai_timeout_seconds=5,
         cache_ttl_seconds=60,
         rate_limit_per_minute=1000,

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.ai import AdvisorError, GeminiAdvisor, compact_context, parse_ai_plan
+from app.ai import AdvisorError, GeminiAdvisor, clean_text, compact_context, parse_ai_plan, thinking_config
 from app.models import AgeGroup, Home, Member
 from app.rules import build_baseline
 from tests.conftest import make_snapshot
@@ -47,21 +47,30 @@ def test_parse_ai_plan_rejects_bad_output(raw, baseline):
         parse_ai_plan(raw, baseline)
 
 
+class _ApiError(Exception):
+    def __init__(self, code):
+        super().__init__(f"error {code}")
+        self.code = code
+
+
 class _FakeModels:
-    def __init__(self, text=None, error=None):
-        self.text, self.error, self.calls = text, error, []
+    """Stands in for client.aio.models; `errors` maps model name -> exception to raise."""
+
+    def __init__(self, text=None, error=None, errors=None):
+        self.text, self.error, self.errors, self.calls = text, error, errors or {}, []
 
     async def generate_content(self, **kwargs):
         self.calls.append(kwargs)
-        if self.error:
-            raise self.error
+        error = self.errors.get(kwargs["model"], self.error)
+        if error:
+            raise error
         return SimpleNamespace(text=self.text)
 
 
-def _advisor(models: _FakeModels) -> GeminiAdvisor:
+def _advisor(models: _FakeModels, names=("gemini-3.8-flash",)) -> GeminiAdvisor:
     advisor = GeminiAdvisor.__new__(GeminiAdvisor)  # skip real client construction
     advisor._client = SimpleNamespace(aio=SimpleNamespace(models=models))
-    advisor._model = "gemini-2.5-flash"
+    advisor._models = list(names)
     advisor._timeout = 5
     return advisor
 
@@ -71,7 +80,7 @@ def test_gemini_plan_success_sends_grounded_prompt(baseline):
     plan = asyncio.run(_advisor(models).personalize_plan(baseline, "hi"))
     assert plan.headline == "h"
     call = models.calls[0]
-    assert call["model"] == "gemini-2.5-flash"
+    assert call["model"] == "gemini-3.8-flash"
     assert call["contents"].startswith("DATA:")
     assert "Hindi" in call["config"].system_instruction
     assert "Never contradict" in call["config"].system_instruction
@@ -89,3 +98,55 @@ def test_gemini_errors_become_advisor_errors(baseline):
         asyncio.run(_advisor(_FakeModels(error=RuntimeError("quota"))).answer("hi there", baseline, "en"))
     with pytest.raises(AdvisorError):
         asyncio.run(_advisor(_FakeModels(text="")).answer("hi there", baseline, "en"))
+
+
+def test_falls_back_to_next_model_on_retired_or_overloaded():
+    models = _FakeModels(text="fine", errors={"old": _ApiError(404), "busy": _ApiError(503)})
+    answer = asyncio.run(_advisor(models, ("old", "busy", "good")).answer("hello?", _baseline(), "en"))
+    assert answer == "fine"
+    assert [c["model"] for c in models.calls] == ["old", "busy", "good"]
+
+
+def test_does_not_retry_on_bad_request():
+    models = _FakeModels(text="fine", errors={"first": _ApiError(400)})
+    with pytest.raises(AdvisorError):
+        asyncio.run(_advisor(models, ("first", "second")).answer("hello?", _baseline(), "en"))
+    assert len(models.calls) == 1
+
+
+def test_all_models_failing_raises():
+    models = _FakeModels(error=_ApiError(503))
+    with pytest.raises(AdvisorError):
+        asyncio.run(_advisor(models, ("a", "b")).answer("hello?", _baseline(), "en"))
+    assert len(models.calls) == 2
+
+
+def test_thinking_config_per_model_family():
+    assert thinking_config("gemini-2.5-flash") == {"thinking_budget": 0}
+    assert thinking_config("gemini-3.8-flash") == {"thinking_level": "low"}
+    assert thinking_config("other-model") is None
+
+
+def _baseline():
+    return build_baseline(make_snapshot([170] * 24), [Member(nickname="A", age_group=AgeGroup.ADULT)], Home(), "Delhi")
+
+
+def test_slow_model_times_out_and_next_model_answers(monkeypatch):
+    class SlowThenFast(_FakeModels):
+        async def generate_content(self, **kwargs):
+            self.calls.append(kwargs)
+            if kwargs["model"] == "slow":
+                await asyncio.sleep(10)
+            return SimpleNamespace(text="fast answer")
+
+    models = SlowThenFast()
+    advisor = _advisor(models, ("slow", "fast"))
+    advisor._timeout = 0.2  # each model gets ~0.1s, so "slow" times out and "fast" still has budget
+    monkeypatch.setattr("app.ai.PER_MODEL_MIN_SECONDS", 0.05)
+    assert asyncio.run(advisor.answer("hello?", _baseline(), "en")) == "fast answer"
+    assert [c["model"] for c in models.calls] == ["slow", "fast"]
+
+
+def test_clean_text_strips_markdown():
+    raw = "## Tips\n**No**, stay in.\n\n\n*   Close `windows`\n- Run the purifier"
+    assert clean_text(raw) == "Tips\nNo, stay in.\n\n• Close windows\n• Run the purifier"

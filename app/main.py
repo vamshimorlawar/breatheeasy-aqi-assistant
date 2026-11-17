@@ -49,7 +49,7 @@ def create_app(
             app.state.advisor = advisor
         elif settings.ai_enabled:
             app.state.advisor = GeminiAdvisor(
-                settings.gemini_api_key or "", settings.gemini_model, settings.ai_timeout_seconds
+                settings.gemini_api_key or "", list(settings.gemini_models), settings.ai_timeout_seconds
             )
         else:
             app.state.advisor = None
