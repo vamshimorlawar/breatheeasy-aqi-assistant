@@ -25,6 +25,18 @@ CURRENT_FIELDS = "us_aqi,pm2_5,pm10"
 FORECAST_HOURS = 24
 
 
+RETRY_STATUSES = {429, 500, 502, 503, 504}
+RETRY_DELAY_SECONDS = 1.0
+
+
+def _provider_reason(response: httpx.Response) -> str:
+    try:
+        reason = response.json().get("reason")
+    except (ValueError, AttributeError):
+        return ""
+    return f": {str(reason)[:120]}" if reason else ""
+
+
 class UpstreamError(RuntimeError):
     """Raised when the air-quality provider fails or returns unusable data."""
 
@@ -135,15 +147,25 @@ class AirQualityClient:
         return (round(latitude, 2), round(longitude, 2))
 
     async def _get_json(self, url: str, params: dict[str, Any]) -> dict[str, Any]:
-        try:
-            response = await self._http.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise UpstreamError("Air-quality provider is unavailable") from exc
-        if not isinstance(data, dict):
-            raise UpstreamError("Unexpected provider response")
-        return data
+        """GET JSON, retrying once on rate limits / transient server errors."""
+        for attempt in range(2):
+            try:
+                response = await self._http.get(url, params=params)
+                if response.status_code in RETRY_STATUSES and attempt == 0:
+                    await asyncio.sleep(RETRY_DELAY_SECONDS)
+                    continue
+                response.raise_for_status()
+                data = response.json()
+            except httpx.HTTPStatusError as exc:
+                # Server-side log only: status and provider's short reason, never user input.
+                reason = _provider_reason(exc.response)
+                raise UpstreamError(f"Provider returned HTTP {exc.response.status_code}{reason}") from exc
+            except (httpx.HTTPError, ValueError) as exc:
+                raise UpstreamError(f"Provider unreachable ({type(exc).__name__})") from exc
+            if not isinstance(data, dict):
+                raise UpstreamError("Unexpected provider response")
+            return data
+        raise UpstreamError("Provider unavailable after retry")  # pragma: no cover
 
     async def get_snapshot(self, latitude: float, longitude: float) -> AirSnapshot:
         key = self.cache_key(latitude, longitude)

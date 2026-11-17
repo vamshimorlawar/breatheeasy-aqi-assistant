@@ -74,14 +74,49 @@ def test_snapshot_is_cached_and_coordinates_are_rounded():
     assert seen[0].url.params["longitude"] == "77.23"
 
 
-def test_upstream_http_error_raises():
+def test_upstream_http_error_raises_with_status_after_one_retry(monkeypatch):
+    monkeypatch.setattr("app.air_client.RETRY_DELAY_SECONDS", 0)
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(429, json={"error": True, "reason": "Too many requests"})
+
     async def scenario():
-        transport = httpx.MockTransport(lambda r: httpx.Response(503))
-        async with httpx.AsyncClient(transport=transport) as http:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
             await AirQualityClient(http).get_snapshot(1, 1)
 
-    with pytest.raises(UpstreamError):
+    with pytest.raises(UpstreamError, match="HTTP 429: Too many requests"):
         run(scenario())
+    assert len(calls) == 2
+
+
+def test_transient_error_recovers_on_retry(monkeypatch):
+    monkeypatch.setattr("app.air_client.RETRY_DELAY_SECONDS", 0)
+    responses = [httpx.Response(503), httpx.Response(200, json=make_payload([90] * 24))]
+
+    async def scenario():
+        transport = httpx.MockTransport(lambda r: responses.pop(0))
+        async with httpx.AsyncClient(transport=transport) as http:
+            return await AirQualityClient(http).get_snapshot(1, 1)
+
+    assert run(scenario()).hourly
+
+
+def test_bad_request_is_not_retried():
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(400, json={"error": True, "reason": "Bad latitude"})
+
+    async def scenario():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            await AirQualityClient(http).get_snapshot(1, 1)
+
+    with pytest.raises(UpstreamError, match="HTTP 400"):
+        run(scenario())
+    assert len(calls) == 1
 
 
 def test_geocode_parses_and_skips_bad_rows():
