@@ -57,7 +57,9 @@ Health guidance must be **reliable and testable**, so the work is split in two:
    - Receives a **compact, grounded JSON** of the baseline: city, AQI series, statuses and nicknames. It does **not** receive coordinates or the raw profile.
    - System instructions forbid contradicting the rule engine or inventing numbers, require medical caution, and treat all user text as *data, not instructions* (prompt-injection defence).
    - Uses **structured JSON output** with a schema, validates it with Pydantic, trims over-long fields and drops notes for unknown nicknames.
-   - Has a timeout. Any failure makes the app fall back to the rule-based plan, so it **always works**.
+   - **Model fallback chain** (default `gemini-3.5-flash-lite` → `gemini-3.1-flash-lite` → `gemini-3.8-flash`, configurable with `GEMINI_MODELS`). If a model is retired (404), rate-limited (429), overloaded (5xx) or slow, the next one is tried within one overall time budget, with a per-model cap. Lite models come first because rewriting already-computed data needs speed, not deep reasoning.
+   - Stray markdown is stripped from responses, because the UI renders plain text.
+   - If every model fails, the app falls back to the rule-based plan, so it **always works**.
 4. **Community share** (`app/share.py`): deterministic English/Hindi alert text, so no AI call is needed.
 
 ## 4. How the solution works (flow)
@@ -94,7 +96,7 @@ Open <http://localhost:8000>. Without a Gemini key, the app still runs with the 
 ### Tests and lint
 
 ```bash
-pytest          # 84 tests: rule engine, data parsing, caching, AI guardrails, API, security
+pytest          # 90 tests: rule engine, data parsing, caching, AI guardrails, API, security
 ruff check .    # lint, including bandit security rules (S)
 ```
 
@@ -105,8 +107,8 @@ ruff check .    # lint, including bandit security rules (S)
 | **Problem alignment** | Daily, per-person, hour-specific actions for families, plus community alerts. Hindi support for Indian cities facing winter smog. |
 | **Code quality** | Small single-purpose modules (`air_client`, `rules`, `ai`, `share`, `security`, `models`), type hints, Pydantic schemas, app factory with dependency injection, ruff lint and format. |
 | **Security** | API key kept server-side in `.env` (git-ignored). Strict Pydantic validation (`extra="forbid"`, regex for nicknames and labels, size limits). Validation errors never reflect input back. Per-IP rate limiting with bounded memory. Strict CSP and security headers (`frame-ancestors 'none'`, `nosniff`, `no-referrer`). `no-store` on API responses. No `innerHTML`. Prompt-injection guardrails and output validation. No personal data stored on the server. Swagger UI disabled. |
-| **Efficiency** | One LLM call per plan (structured JSON, thinking disabled for flash, capped tokens). Forecast cache with request coalescing. Compact prompt context. GZip. No frontend framework or build step; the whole repo is a few hundred KB. |
-| **Testing** | 84 pytest tests covering AQI bands, sensitivity, thresholds, activity windows, infant mask safety, ventilation, caching and coordinate rounding, malformed upstream data, AI output validation and fallbacks, API validation and XSS payloads, rate limiting and security headers. External services are mocked, so tests run offline. |
+| **Efficiency** | One LLM call per plan (structured JSON, fast "lite" models first, minimal thinking, capped tokens). Forecast cache with request coalescing. Compact prompt context. GZip. No frontend framework or build step; the whole repo is a few hundred KB. |
+| **Testing** | 90 pytest tests covering AQI bands, sensitivity, thresholds, activity windows, infant mask safety, ventilation, caching and coordinate rounding, malformed upstream data, AI output validation, model fallback chain and timeouts, API validation and XSS payloads, rate limiting and security headers. External services are mocked, so tests run offline. |
 | **Accessibility** | Semantic HTML landmarks, skip link, labelled fieldsets, `aria-live` status and answers, focus management after actions, visible focus ring, 44 px touch targets, AQI colours **always paired with text**, forecast as a readable list rather than a picture-only chart, light and dark themes, reduced-motion support, and a Hindi output option. |
 
 ## 7. Assumptions
@@ -115,6 +117,7 @@ ruff check .    # lint, including bandit security rules (S)
 - **Forecast source:** Open-Meteo uses CAMS model forecasts (~11 km resolution in Europe, ~40 km globally), not street-level sensors. It is suitable for daily planning, not for exact readings.
 - **Activity time slots** are typical defaults: school commute 7–9 AM, office commute 8–10 AM, outdoor work 9 AM–6 PM, play 6 AM–7 PM, exercise and walks 5/6 AM–9 PM, all in local time.
 - **Interface language:** the UI is in English. AI briefings, answers and community alerts are available in English and Hindi.
+- **Gemini availability:** free-tier models can be congested at peak times, so a briefing may take 10–20 s or fall back to rule-based guidance. Safety advice never depends on the AI.
 - **Single instance:** caching and rate limiting are in memory, which is fine for one server. A multi-instance deployment would use Redis.
 - **Not medical advice:** the app gives general precautions and always points users to a doctor for symptoms.
 
