@@ -1,0 +1,13 @@
+# Render Blueprint: free web service built from the Dockerfile.
+# The Gemini key is entered in the Render dashboard (sync: false), never stored in git.
+services:
+  - type: web
+    name: breatheeasy-aqi-assistant
+    runtime: docker
+    plan: free
+    branch: main
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false

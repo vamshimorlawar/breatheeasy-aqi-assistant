@@ -1,4 +1,4 @@
-# Small production image. Works on Hugging Face Spaces (port 7860), Cloud Run, Render, etc.
+# Small production image for Render, Cloud Run or any Docker host (uses $PORT, default 7860).
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PORT=7860
 
-# Run as an unprivileged user (uid 1000, as Hugging Face Spaces expects).
+# Run as an unprivileged user (uid 1000).
 RUN useradd --create-home --uid 1000 app
 WORKDIR /home/app/code
 

@@ -13,7 +13,7 @@ from starlette.responses import JSONResponse, Response
 
 def security_headers(frame_ancestors: str = "'none'") -> dict[str, str]:
     """Strict default headers. `frame_ancestors` lists origins allowed to embed the app
-    (e.g. the Hugging Face Space page); by default nobody may frame it."""
+    (e.g. a hosting dashboard); by default nobody may frame it."""
     headers = {
         "Content-Security-Policy": (
             "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
