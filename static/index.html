@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="BreatheEasy turns air-quality forecasts into a simple daily plan for your family.">
+  <meta name="color-scheme" content="light dark">
+  <title>BreatheEasy · Family Air Planner</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <header class="site-header">
+    <div class="wrap">
+      <p class="brand"><span aria-hidden="true">🌬️</span> BreatheEasy</p>
+      <p class="tagline">Your family's daily plan for smoggy days: when to step out, what to wear and how to keep home air clean.</p>
+    </div>
+  </header>
+
+  <main id="main" class="wrap" tabindex="-1">
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+
+    <section class="card" aria-labelledby="loc-heading">
+      <h2 id="loc-heading"><span class="step" aria-hidden="true">1</span> Where are you?</h2>
+      <form id="search-form" class="row" novalidate>
+        <label for="city-input" class="visually-hidden">City or area name</label>
+        <input id="city-input" name="city" type="search" autocomplete="address-level2"
+               placeholder="Search a city, e.g. Delhi" minlength="2" maxlength="60" required>
+        <button type="submit" class="btn">Search</button>
+        <button type="button" id="geo-btn" class="btn btn-secondary">📍 Use my location</button>
+      </form>
+      <ul id="search-results" class="search-results" aria-label="Matching places"></ul>
+      <p id="selected-location" class="selected-location">No location selected yet.</p>
+    </section>
+
+    <section class="card" aria-labelledby="house-heading">
+      <h2 id="house-heading"><span class="step" aria-hidden="true">2</span> Your household</h2>
+      <p class="hint">Use nicknames like "Mom" or "Aarav". Your profile stays on this device.</p>
+      <div id="members" class="members"></div>
+      <button type="button" id="add-member" class="btn btn-secondary">+ Add family member</button>
+
+      <fieldset class="home-fieldset">
+        <legend>At home you have</legend>
+        <label class="check"><input type="checkbox" id="has-purifier"> Air purifier</label>
+        <label class="check"><input type="checkbox" id="has-n95"> N95 / KN95 masks</label>
+        <label class="check"><input type="checkbox" id="has-ac"> Air conditioner</label>
+      </fieldset>
+
+      <div class="row">
+        <label for="language">Plan language</label>
+        <select id="language">
+          <option value="en">English</option>
+          <option value="hi">हिन्दी (Hindi)</option>
+        </select>
+      </div>
+
+      <button type="button" id="plan-btn" class="btn btn-primary">Get today's plan</button>
+    </section>
+
+    <section id="results" class="results" aria-labelledby="results-heading" hidden>
+      <h2 id="results-heading" tabindex="-1">Today's plan for <span id="res-place"></span></h2>
+
+      <article id="ai-card" class="card ai-card" aria-labelledby="ai-headline">
+        <p class="eyebrow">✨ AI briefing</p>
+        <h3 id="ai-headline"></h3>
+        <p id="ai-summary"></p>
+      </article>
+
+      <div class="grid">
+        <article class="card aqi-card" aria-labelledby="aqi-heading">
+          <h3 id="aqi-heading">Air right now</h3>
+          <p class="aqi-value"><span id="aqi-number"></span> <span class="aqi-unit">US AQI</span></p>
+          <p id="aqi-band" class="badge"></p>
+          <p id="aqi-detail" class="muted"></p>
+          <p id="aqi-trend"></p>
+        </article>
+
+        <article class="card" aria-labelledby="window-heading">
+          <h3 id="window-heading">Cleanest time to step out</h3>
+          <p id="best-window" class="big"></p>
+          <h4>Fresh air at home</h4>
+          <p id="ventilation"></p>
+        </article>
+      </div>
+
+      <article class="card" aria-labelledby="forecast-heading">
+        <h3 id="forecast-heading">Next 24 hours</h3>
+        <ol id="forecast" class="forecast"></ol>
+      </article>
+
+      <section aria-labelledby="family-heading">
+        <h3 id="family-heading">Plan for each person</h3>
+        <div id="member-plans" class="grid"></div>
+      </section>
+
+      <article class="card" aria-labelledby="home-heading">
+        <h3 id="home-heading">Home actions</h3>
+        <ul id="home-actions" class="ticks"></ul>
+      </article>
+
+      <article class="card" aria-labelledby="share-heading">
+        <h3 id="share-heading">Alert your community</h3>
+        <label for="share-text" class="hint">Copy this message to your society or family WhatsApp group.</label>
+        <textarea id="share-text" rows="8" readonly></textarea>
+        <div class="row">
+          <button type="button" id="copy-btn" class="btn btn-secondary">Copy message</button>
+          <a id="whatsapp-link" class="btn btn-secondary" target="_blank" rel="noopener noreferrer">Share on WhatsApp</a>
+        </div>
+      </article>
+
+      <article class="card" aria-labelledby="ask-heading">
+        <h3 id="ask-heading">Ask BreatheEasy</h3>
+        <form id="ask-form" novalidate>
+          <label for="question">Ask anything about today's air, e.g. "Can my son play cricket at 5 PM?"</label>
+          <textarea id="question" rows="2" minlength="3" maxlength="300" required></textarea>
+          <button type="submit" class="btn btn-primary">Ask</button>
+        </form>
+        <div id="answer" class="answer" aria-live="polite"></div>
+      </article>
+
+      <p id="disclaimer" class="disclaimer"></p>
+    </section>
+  </main>
+
+  <template id="member-template">
+    <fieldset class="member">
+      <legend class="member-legend"></legend>
+      <div class="row">
+        <label>Nickname <input class="m-name" type="text" maxlength="30" required autocomplete="off"></label>
+        <label>Age group
+          <select class="m-age">
+            <option value="infant">Baby (under 2)</option>
+            <option value="child">Child (2–12)</option>
+            <option value="teen">Teen (13–17)</option>
+            <option value="adult" selected>Adult</option>
+            <option value="senior">Senior (65+)</option>
+          </select>
+        </label>
+        <button type="button" class="btn btn-link m-remove">Remove</button>
+      </div>
+      <fieldset class="chips">
+        <legend>Health considerations</legend>
+        <label class="check"><input type="checkbox" value="asthma" class="m-risk"> Asthma</label>
+        <label class="check"><input type="checkbox" value="heart_lung" class="m-risk"> Heart / lung condition</label>
+        <label class="check"><input type="checkbox" value="pregnancy" class="m-risk"> Pregnant</label>
+        <label class="check"><input type="checkbox" value="allergy" class="m-risk"> Allergies</label>
+        <label class="check"><input type="checkbox" value="outdoor_worker" class="m-risk"> Works outdoors</label>
+      </fieldset>
+      <fieldset class="chips">
+        <legend>Usual outdoor activities</legend>
+        <label class="check"><input type="checkbox" value="school_commute" class="m-act"> School commute</label>
+        <label class="check"><input type="checkbox" value="office_commute" class="m-act"> Office commute</label>
+        <label class="check"><input type="checkbox" value="outdoor_play" class="m-act"> Outdoor play</label>
+        <label class="check"><input type="checkbox" value="exercise" class="m-act"> Exercise</label>
+        <label class="check"><input type="checkbox" value="walk" class="m-act"> Walk</label>
+        <label class="check"><input type="checkbox" value="outdoor_work" class="m-act"> Outdoor work</label>
+      </fieldset>
+    </fieldset>
+  </template>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <p>Air-quality data: <a href="https://open-meteo.com/" rel="noopener noreferrer">Open-Meteo</a> (CC BY 4.0, CAMS forecasts). AI briefings by Google Gemini.</p>
+      <p>General guidance, not medical advice.</p>
+    </div>
+  </footer>
+</body>
+</html>
