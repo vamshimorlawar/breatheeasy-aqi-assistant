@@ -10,18 +10,27 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-SECURITY_HEADERS = {
-    "Content-Security-Policy": (
-        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-        "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; "
-        "frame-ancestors 'none'; form-action 'self'"
-    ),
-    "X-Content-Type-Options": "nosniff",
-    "X-Frame-Options": "DENY",
-    "Referrer-Policy": "no-referrer",
-    "Permissions-Policy": "geolocation=(self), camera=(), microphone=(), payment=()",
-    "Cross-Origin-Opener-Policy": "same-origin",
-}
+
+def security_headers(frame_ancestors: str = "'none'") -> dict[str, str]:
+    """Strict default headers. `frame_ancestors` lists origins allowed to embed the app
+    (e.g. the Hugging Face Space page); by default nobody may frame it."""
+    headers = {
+        "Content-Security-Policy": (
+            "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+            "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; "
+            f"frame-ancestors {frame_ancestors}; form-action 'self'"
+        ),
+        "X-Content-Type-Options": "nosniff",
+        "Referrer-Policy": "no-referrer",
+        "Permissions-Policy": "geolocation=(self), camera=(), microphone=(), payment=()",
+        "Cross-Origin-Opener-Policy": "same-origin",
+    }
+    if frame_ancestors == "'none'":
+        headers["X-Frame-Options"] = "DENY"  # legacy browsers; CSP frame-ancestors covers the rest
+    return headers
+
+
+SECURITY_HEADERS = security_headers()
 
 
 class RateLimiter:
@@ -64,9 +73,10 @@ class RateLimiter:
 
 
 class SecurityMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, limiter: RateLimiter):  # type: ignore[no-untyped-def]
+    def __init__(self, app, limiter: RateLimiter, headers: dict[str, str] | None = None):  # type: ignore[no-untyped-def]
         super().__init__(app)
         self.limiter = limiter
+        self.headers = headers or SECURITY_HEADERS
 
     async def dispatch(self, request: Request, call_next) -> Response:  # type: ignore[no-untyped-def]
         if request.url.path.startswith("/api/") and request.url.path != "/api/health":
@@ -81,7 +91,7 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                 response = await call_next(request)
         else:
             response = await call_next(request)
-        for name, value in SECURITY_HEADERS.items():
+        for name, value in self.headers.items():
             response.headers.setdefault(name, value)
         if request.url.path.startswith("/api/"):
             response.headers.setdefault("Cache-Control", "no-store")

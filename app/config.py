@@ -7,6 +7,7 @@ sent to the browser.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,6 +42,12 @@ def _int_env(name: str, default: int, minimum: int = 1) -> int:
         return default
 
 
+def _frame_ancestors(raw: str) -> str:
+    """Accept only space-separated https origins so the value cannot inject CSP directives."""
+    origins = [o for o in raw.split() if re.fullmatch(r"https://[A-Za-z0-9.*-]+(:\d+)?", o)]
+    return " ".join(origins) if origins else "'none'"
+
+
 @dataclass(frozen=True)
 class Settings:
     gemini_api_key: str | None
@@ -49,6 +56,8 @@ class Settings:
     cache_ttl_seconds: int
     rate_limit_per_minute: int
     http_timeout_seconds: float
+    # Origins allowed to embed the app in an iframe (CSP frame-ancestors). "'none'" blocks all.
+    frame_ancestors: str = "'none'"
 
     @property
     def ai_enabled(self) -> bool:
@@ -64,4 +73,5 @@ def get_settings() -> Settings:
         cache_ttl_seconds=_int_env("CACHE_TTL_SECONDS", 900),
         rate_limit_per_minute=_int_env("RATE_LIMIT_PER_MINUTE", 30),
         http_timeout_seconds=float(_int_env("HTTP_TIMEOUT_SECONDS", 10)),
+        frame_ancestors=_frame_ancestors(os.environ.get("FRAME_ANCESTORS", "")),
     )

@@ -19,7 +19,7 @@ from .air_client import AirQualityClient, UpstreamError
 from .config import PROJECT_ROOT, Settings, get_settings
 from .models import AskRequest, AskResponse, Baseline, Place, PlanRequest, PlanResponse
 from .rules import build_baseline, rules_answer
-from .security import RateLimiter, SecurityMiddleware
+from .security import RateLimiter, SecurityMiddleware, security_headers
 from .share import build_share_message
 
 logger = logging.getLogger("breatheeasy")
@@ -68,7 +68,11 @@ def create_app(
         redoc_url=None,
     )
     app.add_middleware(GZipMiddleware, minimum_size=1024)
-    app.add_middleware(SecurityMiddleware, limiter=RateLimiter(settings.rate_limit_per_minute))
+    app.add_middleware(
+        SecurityMiddleware,
+        limiter=RateLimiter(settings.rate_limit_per_minute),
+        headers=security_headers(settings.frame_ancestors),
+    )
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
