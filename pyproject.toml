@@ -1,0 +1,19 @@
+[project]
+name = "breatheeasy"
+version = "1.0.0"
+description = "GenAI urban air quality assistant that turns AQI forecasts into daily family action plans."
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "MIT" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = ["S101"]  # assert is fine in tests
