@@ -51,9 +51,53 @@
       else if (data && Array.isArray(data.detail) && data.detail[0]?.msg) {
         message = "Please check your details: " + data.detail[0].msg.replace(/^Value error, /, "");
       }
-      throw new Error(message);
+      const error = new Error(message);
+      error.status = response.status;
+      throw error;
     }
     return data;
+  }
+
+  // If the server's shared data quota is used up (it answers 502), the browser fetches the
+  // public forecast itself and sends only the fields the server's strict schema accepts.
+  const AIR_URL = "https://air-quality-api.open-meteo.com/v1/air-quality";
+  const AIR_FIELDS = ["time", "us_aqi", "pm2_5", "pm10"];
+
+  function pick(source, keys) {
+    const out = {};
+    for (const key of keys) if (source && key in source) out[key] = source[key];
+    return out;
+  }
+
+  async function fetchAirInBrowser(location) {
+    const params = new URLSearchParams({
+      latitude: location.latitude.toFixed(2), // ~1 km grid, same privacy rounding as the server
+      longitude: location.longitude.toFixed(2),
+      hourly: "us_aqi,pm2_5,pm10",
+      current: "us_aqi,pm2_5,pm10",
+      forecast_days: "3",
+      timezone: "auto",
+    });
+    const response = await fetch(`${AIR_URL}?${params}`, { credentials: "omit", referrerPolicy: "no-referrer" });
+    if (!response.ok) throw new Error("Air-quality data is unavailable right now. Please try again later.");
+    const data = await response.json();
+    return {
+      timezone: typeof data.timezone === "string" ? data.timezone : "auto",
+      current: pick(data.current, AIR_FIELDS),
+      hourly: pick(data.hourly, AIR_FIELDS),
+    };
+  }
+
+  async function postWithFallback(path, body) {
+    const send = () => api(path, { method: "POST", body: JSON.stringify(body) });
+    try {
+      return await send();
+    } catch (err) {
+      if (err.status !== 502 || body.air) throw err;
+      announce("Our data source is busy, fetching the forecast directly…");
+      body.air = await fetchAirInBrowser(body.location);
+      return send();
+    }
   }
 
   // ------------------------------------------------------------ storage
@@ -240,7 +284,7 @@
     button.setAttribute("aria-busy", "true");
     announce("Checking the air and preparing your plan…");
     try {
-      const plan = await api("/api/plan", { method: "POST", body: JSON.stringify(body) });
+      const plan = await postWithFallback("/api/plan", body);
       state.lastRequest = body;
       renderPlan(plan);
       announce("Your plan is ready.");
@@ -362,10 +406,7 @@
     button.disabled = true;
     answer.textContent = "Thinking…";
     try {
-      const res = await api("/api/ask", {
-        method: "POST",
-        body: JSON.stringify({ ...state.lastRequest, question }),
-      });
+      const res = await postWithFallback("/api/ask", { ...state.lastRequest, question });
       answer.textContent = res.answer;
     } catch (err) {
       answer.textContent = "";

@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import __version__
 from .ai import Advisor, AdvisorError, GeminiAdvisor
-from .air_client import AirQualityClient, UpstreamError
+from .air_client import AirQualityClient, UpstreamError, parse_air_payload
 from .config import PROJECT_ROOT, Settings, get_settings
 from .models import AskRequest, AskResponse, Baseline, Place, PlanRequest, PlanResponse
 from .rules import build_baseline, rules_answer
@@ -84,6 +84,15 @@ def create_app(
         return JSONResponse({"detail": errors}, status_code=422)
 
     async def _baseline(request: Request, body: PlanRequest) -> Baseline:
+        if body.air is not None:
+            # Browser-fetched forecast (server quota exhausted): already schema-validated, parsed the same way.
+            try:
+                snapshot = parse_air_payload(body.air.model_dump())
+            except UpstreamError as exc:
+                raise HTTPException(status_code=422, detail="The forecast data could not be used.") from exc
+            if not snapshot.hourly:
+                raise HTTPException(status_code=422, detail="The forecast data is out of date. Please retry.")
+            return build_baseline(snapshot, body.members, body.home, body.location.label or "your area")
         try:
             snapshot = await request.app.state.air.get_snapshot(body.location.latitude, body.location.longitude)
         except UpstreamError as exc:

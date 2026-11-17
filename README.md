@@ -2,6 +2,8 @@
 
 > **PromptWars Virtual, Main Challenge 06: Urban Air Quality Assistant**
 > A GenAI assistant that helps families and communities get through severe urban air pollution with **specific actions they can take each day**, not just an AQI number.
+>
+> **Live demo:** <https://breatheeasy-aqi-assistant.onrender.com> (free tier: the first visit after a quiet spell can take ~1 minute to wake up)
 
 ---
 
@@ -45,7 +47,8 @@ Health guidance must be **reliable and testable**, so the work is split in two:
                         Household profile
 ```
 
-1. **Data layer** (`app/air_client.py`): fetches hourly US AQI, PM2.5 and PM10 from the free **Open-Meteo Air Quality API** (CAMS model, no API key). Coordinates are rounded to a ~1 km grid, which shares the cache between neighbours and avoids sending exact home locations upstream. Responses are cached (TTL, LRU-bounded), and concurrent requests for the same area share **one** upstream call.
+1. **Data layer** (`app/air_client.py`): fetches hourly US AQI, PM2.5 and PM10 from the free **Open-Meteo Air Quality API** (CAMS model, no API key). Coordinates are rounded to a ~1 km grid, which shares the cache between neighbours and avoids sending exact home locations upstream. Responses are cached (TTL, LRU-bounded), and concurrent requests for the same area share **one** upstream call. Rate-limit and server errors are retried once.
+   - **Browser fallback:** free hosts share one outbound IP, which can exhaust Open-Meteo's daily free quota. When that happens the server answers 502, and the browser fetches the same public forecast itself (coordinates rounded the same way) and resends it. The server accepts it only through a strict schema (numbers only, AQI 0–1000, at most 96 hours, local-time pattern, no extra fields) and parses it with the same function, so rules and AI work unchanged. The CSP `connect-src` allows only that one extra origin.
 2. **Rule engine** (`app/rules.py`): the safety source of truth, based on US EPA AQI guidance for sensitive groups:
    - **Sensitivity score** per person: +1 for a sensitive age (infant, child, teen, senior), +1 for a medical risk (asthma, heart/lung condition, pregnancy), giving *normal / sensitive / high*.
    - **Thresholds**: "Go" up to AQI 100 (normal) or 50 (sensitive/high); "Caution" up to 150 / 100 / 75; above that, "Avoid".
@@ -93,10 +96,18 @@ uvicorn app.main:app --reload
 
 Open <http://localhost:8000>. Without a Gemini key, the app still runs with the full rule-based plan, and the AI briefing shows as "turned off".
 
+### Docker / hosting
+
+The app ships as a small Docker image (`python:3.12-slim`, non-root user, no `.env` or tests inside). It is hosted on **Render's free tier** via [`render.yaml`](render.yaml): Render builds the `Dockerfile` from `main`, and `GEMINI_API_KEY` is entered in the Render dashboard (never in git).
+
+```bash
+docker build -t breatheeasy . && docker run -p 7860:7860 --env-file .env breatheeasy
+```
+
 ### Tests and lint
 
 ```bash
-pytest          # 90 tests: rule engine, data parsing, caching, AI guardrails, API, security
+pytest          # 106 tests: rule engine, data parsing, caching, AI guardrails, API, security
 ruff check .    # lint, including bandit security rules (S)
 ```
 
@@ -108,7 +119,7 @@ ruff check .    # lint, including bandit security rules (S)
 | **Code quality** | Small single-purpose modules (`air_client`, `rules`, `ai`, `share`, `security`, `models`), type hints, Pydantic schemas, app factory with dependency injection, ruff lint and format. |
 | **Security** | API key kept server-side in `.env` (git-ignored). Strict Pydantic validation (`extra="forbid"`, regex for nicknames and labels, size limits). Validation errors never reflect input back. Per-IP rate limiting with bounded memory. Strict CSP and security headers (`frame-ancestors 'none'`, `nosniff`, `no-referrer`). `no-store` on API responses. No `innerHTML`. Prompt-injection guardrails and output validation. No personal data stored on the server. Swagger UI disabled. |
 | **Efficiency** | One LLM call per plan (structured JSON, fast "lite" models first, minimal thinking, capped tokens). Forecast cache with request coalescing. Compact prompt context. GZip. No frontend framework or build step; the whole repo is a few hundred KB. |
-| **Testing** | 90 pytest tests covering AQI bands, sensitivity, thresholds, activity windows, infant mask safety, ventilation, caching and coordinate rounding, malformed upstream data, AI output validation, model fallback chain and timeouts, API validation and XSS payloads, rate limiting and security headers. External services are mocked, so tests run offline. |
+| **Testing** | 106 pytest tests covering AQI bands, sensitivity, thresholds, activity windows, infant mask safety, ventilation, caching and coordinate rounding, malformed upstream data, AI output validation, model fallback chain and timeouts, upstream retry, tampered browser-forecast payloads, API validation and XSS payloads, rate limiting and security headers. External services are mocked, so tests run offline. |
 | **Accessibility** | Semantic HTML landmarks, skip link, labelled fieldsets, `aria-live` status and answers, focus management after actions, visible focus ring, 44 px touch targets, AQI colours **always paired with text**, forecast as a readable list rather than a picture-only chart, light and dark themes, reduced-motion support, and a Hindi output option. |
 
 ## 7. Assumptions
@@ -118,6 +129,7 @@ ruff check .    # lint, including bandit security rules (S)
 - **Activity time slots** are typical defaults: school commute 7–9 AM, office commute 8–10 AM, outdoor work 9 AM–6 PM, play 6 AM–7 PM, exercise and walks 5/6 AM–9 PM, all in local time.
 - **Interface language:** the UI is in English. AI briefings, answers and community alerts are available in English and Hindi.
 - **Gemini availability:** free-tier models can be congested at peak times, so a briefing may take 10–20 s or fall back to rule-based guidance. Safety advice never depends on the AI.
+- **Browser-supplied forecast:** when the server's data quota is used up, the plan is built from forecast data the visitor's browser fetched. A visitor could edit that data, but it only changes their own plan, and it is schema- and range-checked before use.
 - **Single instance:** caching and rate limiting are in memory, which is fine for one server. A multi-instance deployment would use Redis.
 - **Not medical advice:** the app gives general precautions and always points users to a doctor for symptoms.
 

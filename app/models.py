@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -71,11 +71,44 @@ class Location(StrictModel):
     label: str | None = Field(default=None, max_length=80, pattern=PLACE_LABEL_PATTERN)
 
 
+# ---- Forecast fetched by the browser (fallback when the server's provider quota is used up)
+
+LOCAL_TIME_PATTERN = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$"
+LocalTime = Annotated[str, Field(pattern=LOCAL_TIME_PATTERN)]
+# strict: numbers only (no "100" strings); ints are still accepted as floats
+Aqi = Annotated[float, Field(strict=True, ge=0, le=1000)] | None
+Concentration = Annotated[float, Field(strict=True, ge=0, le=5000)] | None
+MAX_HOURS = 96  # Open-Meteo returns 72 hourly values for forecast_days=3
+
+
+class ClientAirCurrent(StrictModel):
+    time: LocalTime
+    us_aqi: Aqi = None
+    pm2_5: Concentration = None
+    pm10: Concentration = None
+
+
+class ClientAirHourly(StrictModel):
+    time: list[LocalTime] = Field(min_length=1, max_length=MAX_HOURS)
+    us_aqi: list[Aqi] = Field(default_factory=list, max_length=MAX_HOURS)
+    pm2_5: list[Concentration] = Field(default_factory=list, max_length=MAX_HOURS)
+    pm10: list[Concentration] = Field(default_factory=list, max_length=MAX_HOURS)
+
+
+class ClientAir(StrictModel):
+    """Bounded, schema-checked copy of an Open-Meteo response. It only affects the sender's own plan."""
+
+    timezone: str = Field(default="auto", pattern=r"^[A-Za-z0-9_+\-/]{1,64}$")
+    current: ClientAirCurrent
+    hourly: ClientAirHourly
+
+
 class PlanRequest(StrictModel):
     location: Location
     members: list[Member] = Field(min_length=1, max_length=8)
     home: Home = Field(default_factory=Home)
     language: Language = "en"
+    air: ClientAir | None = None
 
     @model_validator(mode="after")
     def _unique_nicknames(self) -> PlanRequest:

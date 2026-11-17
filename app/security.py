@@ -17,7 +17,9 @@ def security_headers(frame_ancestors: str = "'none'") -> dict[str, str]:
     headers = {
         "Content-Security-Policy": (
             "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-            "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; "
+            # The browser may fetch the public forecast directly if the server's quota is exhausted.
+            "connect-src 'self' https://air-quality-api.open-meteo.com; "
+            "font-src 'self'; object-src 'none'; base-uri 'none'; "
             f"frame-ancestors {frame_ancestors}; form-action 'self'"
         ),
         "X-Content-Type-Options": "nosniff",
