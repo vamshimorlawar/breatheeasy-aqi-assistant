@@ -1,0 +1,88 @@
+"""Security helpers: per-client rate limiting and HTTP security headers."""
+
+from __future__ import annotations
+
+import time
+from collections import deque
+from collections.abc import Callable
+
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
+
+SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+        "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; "
+        "frame-ancestors 'none'; form-action 'self'"
+    ),
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Permissions-Policy": "geolocation=(self), camera=(), microphone=(), payment=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
+}
+
+
+class RateLimiter:
+    """Sliding-window limiter kept in memory (enough for a single-instance deployment)."""
+
+    def __init__(
+        self,
+        limit: int,
+        window_seconds: float = 60.0,
+        max_clients: int = 10_000,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        self.limit = limit
+        self.window = window_seconds
+        self.max_clients = max_clients
+        self._clock = clock
+        self._hits: dict[str, deque[float]] = {}
+
+    def allow(self, key: str) -> bool:
+        now = self._clock()
+        hits = self._hits.get(key)
+        if hits is None:
+            if len(self._hits) >= self.max_clients:
+                self._evict(now)
+            hits = self._hits[key] = deque()
+        while hits and now - hits[0] >= self.window:
+            hits.popleft()
+        if len(hits) >= self.limit:
+            return False
+        hits.append(now)
+        return True
+
+    def _evict(self, now: float) -> None:
+        stale = [k for k, q in self._hits.items() if not q or now - q[-1] >= self.window]
+        for key in stale:
+            del self._hits[key]
+        if len(self._hits) >= self.max_clients:  # still full: drop the oldest clients
+            for key in list(self._hits)[: self.max_clients // 10 or 1]:
+                del self._hits[key]
+
+
+class SecurityMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, limiter: RateLimiter):  # type: ignore[no-untyped-def]
+        super().__init__(app)
+        self.limiter = limiter
+
+    async def dispatch(self, request: Request, call_next) -> Response:  # type: ignore[no-untyped-def]
+        if request.url.path.startswith("/api/") and request.url.path != "/api/health":
+            client = request.client.host if request.client else "unknown"
+            if not self.limiter.allow(client):
+                response: Response = JSONResponse(
+                    {"detail": "Too many requests. Please wait a minute and try again."},
+                    status_code=429,
+                    headers={"Retry-After": str(int(self.limiter.window))},
+                )
+            else:
+                response = await call_next(request)
+        else:
+            response = await call_next(request)
+        for name, value in SECURITY_HEADERS.items():
+            response.headers.setdefault(name, value)
+        if request.url.path.startswith("/api/"):
+            response.headers.setdefault("Cache-Control", "no-store")
+        return response
