@@ -13,6 +13,9 @@ PLACE_LABEL_PATTERN = r"^[\w][\w ,.'()\-]{0,79}$"
 
 Language = Literal["en", "hi"]
 Status = Literal["go", "caution", "avoid"]
+SensitivityLabel = Literal["normal", "sensitive", "high"]
+Trend = Literal["improving", "worsening", "steady", "unknown"]
+AiStatus = Literal["ok", "unavailable", "disabled"]
 
 
 class AgeGroup(str, Enum):
@@ -55,7 +58,7 @@ class Member(StrictModel):
 
     @field_validator("risk_factors", "activities")
     @classmethod
-    def _dedupe(cls, values: list) -> list:
+    def _dedupe(cls, values: list[Enum]) -> list[Enum]:
         return list(dict.fromkeys(values))
 
 
@@ -173,7 +176,7 @@ class ActivityAdvice(BaseModel):
 
 class MemberPlan(BaseModel):
     nickname: str
-    sensitivity: Literal["normal", "sensitive", "high"]
+    sensitivity: SensitivityLabel
     overall_status: Status
     mask: str
     activities: list[ActivityAdvice]
@@ -185,7 +188,7 @@ class Baseline(BaseModel):
     timezone: str
     current: CurrentAir
     peak_aqi: int | None
-    trend: Literal["improving", "worsening", "steady", "unknown"]
+    trend: Trend
     hourly: list[HourPoint]
     best_window: TimeWindow | None
     ventilation: str
@@ -208,7 +211,7 @@ class AiPlan(BaseModel):
 class PlanResponse(BaseModel):
     baseline: Baseline
     ai: AiPlan | None
-    ai_status: Literal["ok", "unavailable", "disabled"]
+    ai_status: AiStatus
     share_message: str
 
 

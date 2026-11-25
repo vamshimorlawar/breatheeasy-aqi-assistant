@@ -104,22 +104,26 @@ The app ships as a small Docker image (`python:3.12-slim`, non-root user, no `.e
 docker build -t breatheeasy . && docker run -p 7860:7860 --env-file .env breatheeasy
 ```
 
-### Tests and lint
+### Tests and quality checks
 
 ```bash
-pytest          # 106 tests: rule engine, data parsing, caching, AI guardrails, API, security
-ruff check .    # lint, including bandit security rules (S)
+pytest --cov    # 114 tests (94% branch coverage): rules, parsing, caching, AI guardrails, service, API, security
+npm test        # 7 front-end unit tests (node --test, no npm dependencies)
+mypy            # strict type checking, zero `type: ignore`
+ruff check . && ruff format --check .   # lint (incl. bandit security rules) and formatting
 ```
+
+All of these run on every push in GitHub Actions ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)), with a 90% coverage floor.
 
 ## 6. Evaluation focus areas
 
 | Area | What we did |
 |---|---|
 | **Problem alignment** | Daily, per-person, hour-specific actions for families, plus community alerts. Hindi support for Indian cities facing winter smog. |
-| **Code quality** | Small single-purpose modules (`air_client`, `rules`, `ai`, `share`, `security`, `models`), type hints, Pydantic schemas, app factory with dependency injection, ruff lint and format. |
+| **Code quality** | Layered design: thin FastAPI routes → `PlannerService` use-case layer (HTTP-free, tested directly) → pure rule engine, with `Protocol` interfaces (`AirSource`, `Advisor`) for dependency injection. **mypy `--strict` passes with zero `type: ignore`**; named constants instead of magic numbers; front end split into small ES modules (`dom`, `api`, `household`, `location`, `render`, pure `validation`). ruff lint and format, `.editorconfig`, and CI on every push. |
 | **Security** | API key kept server-side in `.env` (git-ignored). Strict Pydantic validation (`extra="forbid"`, regex for nicknames and labels, size limits). Validation errors never reflect input back. Per-IP rate limiting with bounded memory. Strict CSP and security headers (`frame-ancestors 'none'`, `nosniff`, `no-referrer`). `no-store` on API responses. No `innerHTML`. Prompt-injection guardrails and output validation. No personal data stored on the server. Swagger UI disabled. |
 | **Efficiency** | One LLM call per plan (structured JSON, fast "lite" models first, minimal thinking, capped tokens). Forecast cache with request coalescing. Compact prompt context. GZip. No frontend framework or build step; the whole repo is a few hundred KB. |
-| **Testing** | 106 pytest tests covering AQI bands, sensitivity, thresholds, activity windows, infant mask safety, ventilation, caching and coordinate rounding, malformed upstream data, AI output validation, model fallback chain and timeouts, upstream retry, tampered browser-forecast payloads, API validation and XSS payloads, rate limiting and security headers. External services are mocked, so tests run offline. |
+| **Testing** | 114 pytest tests (94% branch coverage, enforced ≥90% in CI) plus 7 `node --test` front-end tests, covering AQI bands, sensitivity, thresholds, activity windows, infant mask safety, ventilation, caching and coordinate rounding, malformed upstream data, AI output validation, model fallback chain and timeouts, upstream retry, tampered browser-forecast payloads, API validation and XSS payloads, rate limiting and security headers. External services are mocked, so tests run offline. |
 | **Accessibility** | Semantic HTML landmarks, skip link, labelled fieldsets, `aria-live` status and answers, focus management after actions, visible focus ring, 44 px touch targets, AQI colours **always paired with text**, forecast as a readable list rather than a picture-only chart, light and dark themes, reduced-motion support, and a Hindi output option. |
 
 ## 7. Assumptions
@@ -137,7 +141,8 @@ ruff check .    # lint, including bandit security rules (S)
 
 ```
 app/
-  main.py        FastAPI app factory, routes, error handling
+  main.py        FastAPI app factory, thin routes, error-to-status mapping
+  service.py     PlannerService use-case layer (plan, ask, geocode, browser-forecast fallback)
   config.py      Settings from environment / .env
   models.py      Pydantic request/response schemas (validation)
   air_client.py  Open-Meteo client, parsing, TTL cache
@@ -146,8 +151,12 @@ app/
   ai.py          Gemini advisor with guardrails and output validation
   share.py       Community alert messages (EN/HI)
   security.py    Rate limiter and security headers middleware
-static/          Accessible HTML/CSS/JS front end (no build step)
-tests/           pytest suite (offline, mocked externals)
+static/
+  index.html     Accessible single page
+  js/            ES modules: main (wiring), api, dom, household, location, profile, render,
+                 validation (pure, unit-tested)
+tests/           pytest suite (offline, mocked externals); tests/js for front-end unit tests
+.github/         CI: ruff, mypy --strict, pytest --cov, node --test
 ```
 
 ## Credits

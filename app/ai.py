@@ -229,7 +229,7 @@ class GeminiAdvisor:
                     continue
                 raise AdvisorError(f"Gemini request failed: {last_error}") from exc
             text = getattr(response, "text", None)
-            if text and text.strip():
+            if isinstance(text, str) and text.strip():
                 return text.strip()
             last_error = f"{model}: empty response"
         raise AdvisorError(f"Gemini request failed: {last_error}")

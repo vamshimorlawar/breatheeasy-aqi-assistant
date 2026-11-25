@@ -1,0 +1,9 @@
+{
+  "name": "breatheeasy-frontend",
+  "private": true,
+  "type": "module",
+  "description": "Front-end unit tests only; the app itself has no build step or npm dependencies.",
+  "scripts": {
+    "test": "node --test tests/js/"
+  }
+}

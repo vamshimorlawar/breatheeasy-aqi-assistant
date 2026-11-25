@@ -1,34 +1,52 @@
-"""FastAPI application: JSON API plus the static, accessible web UI."""
+"""FastAPI application: JSON API plus the static, accessible web UI.
+
+Routes stay thin: they validate input (Pydantic), call `PlannerService`, and map
+service errors to HTTP status codes.
+"""
 
 from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from typing import Annotated, cast
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import __version__
-from .ai import Advisor, AdvisorError, GeminiAdvisor
-from .air_client import AirQualityClient, UpstreamError, parse_air_payload
+from .ai import Advisor, GeminiAdvisor
+from .air_client import AirQualityClient
 from .config import PROJECT_ROOT, Settings, get_settings
-from .models import AskRequest, AskResponse, Baseline, Place, PlanRequest, PlanResponse
-from .rules import build_baseline, rules_answer
+from .models import AskRequest, AskResponse, Place, PlanRequest, PlanResponse
 from .security import RateLimiter, SecurityMiddleware, security_headers
-from .share import build_share_message
+from .service import AirSource, DataUnavailableError, InvalidForecastError, PlannerService
 
 logger = logging.getLogger("breatheeasy")
 STATIC_DIR = PROJECT_ROOT / "static"
 
 
+def _build_advisor(settings: Settings) -> Advisor | None:
+    if not settings.gemini_api_key:
+        logger.warning("GEMINI_API_KEY not set: running with rule-based guidance only.")
+        return None
+    return GeminiAdvisor(settings.gemini_api_key, list(settings.gemini_models), settings.ai_timeout_seconds)
+
+
+def get_service(request: Request) -> PlannerService:
+    return cast(PlannerService, request.app.state.service)
+
+
+Service = Annotated[PlannerService, Depends(get_service)]
+
+
 def create_app(
     settings: Settings | None = None,
-    air_client: AirQualityClient | None = None,
+    air_client: AirSource | None = None,
     advisor: Advisor | None = None,
 ) -> FastAPI:
     """App factory. Tests inject fake clients; production builds the real ones."""
@@ -36,29 +54,14 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        http: httpx.AsyncClient | None = None
-        if air_client is None:
-            http = httpx.AsyncClient(
-                timeout=settings.http_timeout_seconds,
-                headers={"User-Agent": f"BreatheEasy/{__version__}"},
-            )
-            app.state.air = AirQualityClient(http, settings.cache_ttl_seconds)
-        else:
-            app.state.air = air_client
-        if advisor is not None:
-            app.state.advisor = advisor
-        elif settings.ai_enabled:
-            app.state.advisor = GeminiAdvisor(
-                settings.gemini_api_key or "", list(settings.gemini_models), settings.ai_timeout_seconds
-            )
-        else:
-            app.state.advisor = None
-            logger.warning("GEMINI_API_KEY not set: running with rule-based guidance only.")
-        try:
+        async with httpx.AsyncClient(
+            timeout=settings.http_timeout_seconds,
+            headers={"User-Agent": f"BreatheEasy/{__version__}"},
+        ) as http:
+            air = air_client or AirQualityClient(http, settings.cache_ttl_seconds)
+            ai = advisor if advisor is not None else _build_advisor(settings)
+            app.state.service = PlannerService(air, ai)
             yield
-        finally:
-            if http is not None:
-                await http.aclose()
 
     app = FastAPI(
         title="BreatheEasy",
@@ -73,7 +76,12 @@ def create_app(
         limiter=RateLimiter(settings.rate_limit_per_minute),
         headers=security_headers(settings.frame_ancestors),
     )
+    _register_error_handlers(app)
+    _register_routes(app)
+    return app
 
+
+def _register_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
         # Return field + message only; never reflect the submitted values back.
@@ -83,73 +91,38 @@ def create_app(
         ]
         return JSONResponse({"detail": errors}, status_code=422)
 
-    async def _baseline(request: Request, body: PlanRequest) -> Baseline:
-        if body.air is not None:
-            # Browser-fetched forecast (server quota exhausted): already schema-validated, parsed the same way.
-            try:
-                snapshot = parse_air_payload(body.air.model_dump())
-            except UpstreamError as exc:
-                raise HTTPException(status_code=422, detail="The forecast data could not be used.") from exc
-            if not snapshot.hourly:
-                raise HTTPException(status_code=422, detail="The forecast data is out of date. Please retry.")
-            return build_baseline(snapshot, body.members, body.home, body.location.label or "your area")
-        try:
-            snapshot = await request.app.state.air.get_snapshot(body.location.latitude, body.location.longitude)
-        except UpstreamError as exc:
-            logger.warning("Air-quality lookup failed: %s", exc)
-            raise HTTPException(
-                status_code=502, detail="Air-quality data is unavailable right now. Please retry."
-            ) from exc
-        label = body.location.label or "your area"
-        return build_baseline(snapshot, body.members, body.home, label)
+    @app.exception_handler(DataUnavailableError)
+    async def data_unavailable(_: Request, exc: DataUnavailableError) -> JSONResponse:
+        # 502 tells the browser it may retry with a forecast it fetches itself.
+        return JSONResponse({"detail": exc.message}, status_code=502)
 
+    @app.exception_handler(InvalidForecastError)
+    async def invalid_forecast(_: Request, exc: InvalidForecastError) -> JSONResponse:
+        return JSONResponse({"detail": exc.message}, status_code=422)
+
+
+def _register_routes(app: FastAPI) -> None:
     @app.get("/api/health")
-    async def health(request: Request) -> dict[str, object]:
-        return {"status": "ok", "version": __version__, "ai_enabled": request.app.state.advisor is not None}
+    async def health(service: Service) -> dict[str, object]:
+        return {"status": "ok", "version": __version__, "ai_enabled": service.ai_enabled}
 
     @app.get("/api/geocode", response_model=list[Place])
-    async def geocode(request: Request, q: str = Query(min_length=2, max_length=60)) -> list[Place]:
-        try:
-            return await request.app.state.air.geocode(q)
-        except UpstreamError as exc:
-            raise HTTPException(status_code=502, detail="Location search is unavailable right now.") from exc
+    async def geocode(service: Service, q: Annotated[str, Query(min_length=2, max_length=60)]) -> list[Place]:
+        return await service.geocode(q)
 
     @app.post("/api/plan", response_model=PlanResponse)
-    async def plan(request: Request, body: PlanRequest) -> PlanResponse:
-        baseline = await _baseline(request, body)
-        advisor: Advisor | None = request.app.state.advisor
-        ai_plan, ai_status = None, "disabled"
-        if advisor is not None:
-            try:
-                ai_plan, ai_status = await advisor.personalize_plan(baseline, body.language), "ok"
-            except AdvisorError as exc:
-                logger.warning("AI plan unavailable: %s", exc)
-                ai_status = "unavailable"
-        return PlanResponse(
-            baseline=baseline,
-            ai=ai_plan,
-            ai_status=ai_status,  # type: ignore[arg-type]
-            share_message=build_share_message(baseline, body.language),
-        )
+    async def plan(service: Service, body: PlanRequest) -> PlanResponse:
+        return await service.plan(body)
 
     @app.post("/api/ask", response_model=AskResponse)
-    async def ask(request: Request, body: AskRequest) -> AskResponse:
-        baseline = await _baseline(request, body)
-        advisor: Advisor | None = request.app.state.advisor
-        if advisor is not None:
-            try:
-                return AskResponse(answer=await advisor.answer(body.question, baseline, body.language), source="gemini")
-            except AdvisorError as exc:
-                logger.warning("AI answer unavailable: %s", exc)
-        return AskResponse(answer=rules_answer(baseline), source="rules")
+    async def ask(service: Service, body: AskRequest) -> AskResponse:
+        return await service.ask(body)
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
     @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
     async def index() -> FileResponse:
         return FileResponse(STATIC_DIR / "index.html")
-
-    return app
 
 
 app = create_app()

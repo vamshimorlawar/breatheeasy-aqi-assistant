@@ -6,9 +6,10 @@ import time
 from collections import deque
 from collections.abc import Callable
 
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
+from starlette.types import ASGIApp
 
 
 def security_headers(frame_ancestors: str = "'none'") -> dict[str, str]:
@@ -33,6 +34,7 @@ def security_headers(frame_ancestors: str = "'none'") -> dict[str, str]:
 
 
 SECURITY_HEADERS = security_headers()
+UNLIMITED_PATHS = frozenset({"/api/health"})  # uptime checks must never be throttled
 
 
 class RateLimiter:
@@ -75,26 +77,30 @@ class RateLimiter:
 
 
 class SecurityMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, limiter: RateLimiter, headers: dict[str, str] | None = None):  # type: ignore[no-untyped-def]
+    """Rate-limits API calls per client and adds security headers to every response."""
+
+    def __init__(self, app: ASGIApp, limiter: RateLimiter, headers: dict[str, str] | None = None):
         super().__init__(app)
         self.limiter = limiter
         self.headers = headers or SECURITY_HEADERS
 
-    async def dispatch(self, request: Request, call_next) -> Response:  # type: ignore[no-untyped-def]
-        if request.url.path.startswith("/api/") and request.url.path != "/api/health":
-            client = request.client.host if request.client else "unknown"
-            if not self.limiter.allow(client):
-                response: Response = JSONResponse(
-                    {"detail": "Too many requests. Please wait a minute and try again."},
-                    status_code=429,
-                    headers={"Retry-After": str(int(self.limiter.window))},
-                )
-            else:
-                response = await call_next(request)
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
+        path = request.url.path
+        is_api = path.startswith("/api/")
+        if is_api and path not in UNLIMITED_PATHS and not self.limiter.allow(_client_key(request)):
+            response: Response = JSONResponse(
+                {"detail": "Too many requests. Please wait a minute and try again."},
+                status_code=429,
+                headers={"Retry-After": str(int(self.limiter.window))},
+            )
         else:
             response = await call_next(request)
         for name, value in self.headers.items():
             response.headers.setdefault(name, value)
-        if request.url.path.startswith("/api/"):
+        if is_api:
             response.headers.setdefault("Cache-Control", "no-store")
         return response
+
+
+def _client_key(request: Request) -> str:
+    return request.client.host if request.client else "unknown"

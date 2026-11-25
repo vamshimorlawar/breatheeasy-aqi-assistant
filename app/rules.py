@@ -8,6 +8,7 @@ and the app keeps working with this engine alone if the AI is unavailable.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import IntEnum
@@ -27,8 +28,10 @@ from .models import (
     Member,
     MemberPlan,
     RiskFactor,
+    SensitivityLabel,
     Status,
     TimeWindow,
+    Trend,
 )
 
 DISCLAIMER = (
@@ -44,6 +47,12 @@ class Sensitivity(IntEnum):
     HIGH = 2
 
 
+SENSITIVITY_LABELS: dict[Sensitivity, SensitivityLabel] = {
+    Sensitivity.NORMAL: "normal",
+    Sensitivity.SENSITIVE: "sensitive",
+    Sensitivity.HIGH: "high",
+}
+
 SENSITIVE_AGES = {AgeGroup.INFANT, AgeGroup.CHILD, AgeGroup.TEEN, AgeGroup.SENIOR}
 MEDICAL_RISKS = {RiskFactor.ASTHMA, RiskFactor.HEART_LUNG, RiskFactor.PREGNANCY}
 
@@ -53,6 +62,8 @@ CAUTION_LIMIT = {Sensitivity.NORMAL: 150, Sensitivity.SENSITIVE: 100, Sensitivit
 
 VENTILATE_MAX_AQI = 100
 WINDOW_HOURS = 3
+PEAK_HOURS = 12  # masks and home actions plan for the next half day
+TREND_DELTA = 15  # AQI change over ~6 h that counts as improving/worsening
 
 
 @dataclass(frozen=True)
@@ -113,18 +124,26 @@ def status_for(aqi: int | None, sensitivity: Sensitivity) -> Status:
     return "avoid"
 
 
-def _valid(hours: tuple[HourReading, ...] | list[HourReading]) -> list[HourReading]:
-    return [h for h in hours if h.aqi is not None]
+@dataclass(frozen=True)
+class KnownHour:
+    """An hour whose AQI is known (lets the type checker prove `aqi` is an int)."""
+
+    time: datetime
+    aqi: int
+
+
+def _valid(hours: Sequence[HourReading]) -> list[KnownHour]:
+    return [KnownHour(h.time, h.aqi) for h in hours if h.aqi is not None]
 
 
 def best_window(hours: tuple[HourReading, ...], size: int = WINDOW_HOURS) -> TimeWindow | None:
     """Cleanest block of `size` consecutive hours (earliest wins ties)."""
     best: tuple[float, int] | None = None
     for i in range(0, len(hours) - size + 1):
-        block = hours[i : i + size]
-        if any(h.aqi is None for h in block):
+        block = _valid(hours[i : i + size])
+        if len(block) < size:
             continue
-        avg = mean(h.aqi for h in block)  # type: ignore[misc]
+        avg = mean(h.aqi for h in block)
         if best is None or avg < best[0]:
             best = (avg, i)
     if best is None:
@@ -139,14 +158,14 @@ def best_window(hours: tuple[HourReading, ...], size: int = WINDOW_HOURS) -> Tim
     )
 
 
-def trend(hours: tuple[HourReading, ...]) -> str:
+def trend(hours: tuple[HourReading, ...]) -> Trend:
     valid = _valid(hours[:7])
     if len(valid) < 4:
         return "unknown"
-    now, later = valid[0].aqi, mean(h.aqi for h in valid[1:])  # type: ignore[misc]
-    if later <= now - 15:  # type: ignore[operator]
+    now, later = valid[0].aqi, mean(h.aqi for h in valid[1:])
+    if later <= now - TREND_DELTA:
         return "improving"
-    if later >= now + 15:  # type: ignore[operator]
+    if later >= now + TREND_DELTA:
         return "worsening"
     return "steady"
 
@@ -180,10 +199,10 @@ def activity_advice(
         )
 
     if spec.flexible:
-        chosen = min(slot, key=lambda h: h.aqi)  # type: ignore[arg-type, return-value]
+        chosen = min(slot, key=lambda h: h.aqi)
         aqi, time_label = chosen.aqi, hour_label(chosen.time)
     else:
-        aqi = max(h.aqi for h in slot)  # type: ignore[type-var]
+        aqi = max(h.aqi for h in slot)
         time_label = range_label(slot[0].time, slot[-1].time)
 
     status = status_for(aqi, sensitivity)
@@ -269,7 +288,7 @@ def member_plan(
     overall: Status = "avoid" if "avoid" in statuses else "caution" if "caution" in statuses else "go"
     return MemberPlan(
         nickname=member.nickname,
-        sensitivity=sensitivity.name.lower(),  # type: ignore[arg-type]
+        sensitivity=SENSITIVITY_LABELS[sensitivity],
         overall_status=overall,
         mask=mask_advice(member, sensitivity, peak_aqi),
         activities=activities,
@@ -284,9 +303,9 @@ def ventilation_advice(hours: tuple[HourReading, ...]) -> str:
     valid = _valid(hours)
     if not valid:
         return "Forecast unavailable. Keep windows closed if the air looks or smells smoky."
-    cleanest = min(valid, key=lambda h: h.aqi)  # type: ignore[arg-type, return-value]
+    cleanest = min(valid, key=lambda h: h.aqi)
     when = hour_label(cleanest.time)
-    if cleanest.aqi <= VENTILATE_MAX_AQI:  # type: ignore[operator]
+    if cleanest.aqi <= VENTILATE_MAX_AQI:
         return (
             f"Open windows for 15–20 minutes around {when} (AQI ~{cleanest.aqi}) to let fresh air in. "
             "Keep them closed at other times."
@@ -335,7 +354,7 @@ def household_actions(home: Home, members: list[Member], peak_aqi: int | None) -
 def build_baseline(snapshot: AirSnapshot, members: list[Member], home: Home, location_label: str) -> Baseline:
     hours = snapshot.hourly
     valid = _valid(hours)
-    peak_aqi = max((h.aqi for h in valid[:12]), default=None)  # type: ignore[type-var]
+    peak_aqi = max((h.aqi for h in valid[:PEAK_HOURS]), default=None)
     current_aqi = snapshot.current.aqi if snapshot.current.aqi is not None else (valid[0].aqi if valid else None)
 
     return Baseline(
@@ -349,7 +368,7 @@ def build_baseline(snapshot: AirSnapshot, members: list[Member], home: Home, loc
             band=_band_info(band_for(current_aqi)),
         ),
         peak_aqi=peak_aqi,
-        trend=trend(hours),  # type: ignore[arg-type]
+        trend=trend(hours),
         hourly=[
             HourPoint(
                 time=h.time.isoformat(),

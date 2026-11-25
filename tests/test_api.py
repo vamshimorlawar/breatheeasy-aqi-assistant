@@ -16,7 +16,7 @@ def test_index_and_static_assets_served_with_security_headers(make_client):
     csp = response.headers["content-security-policy"]
     assert "default-src 'self'" in csp and "frame-ancestors 'none'" in csp
     assert response.headers["x-content-type-options"] == "nosniff"
-    assert client.get("/static/app.js").status_code == 200
+    assert client.get("/static/js/main.js").status_code == 200
     assert client.head("/").status_code == 200
 
 

@@ -17,3 +17,18 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "S"]
 ignore = ["S101"]  # assert is fine in tests
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_ignores = true
+files = ["app"]
+plugins = ["pydantic.mypy"]
+
+[tool.coverage.run]
+source = ["app"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
